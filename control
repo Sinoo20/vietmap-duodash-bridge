@@ -1,0 +1,9 @@
+Package: com.user.vietmapduodash
+Name: VietMap DuoDash Bridge
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Cầu nối truyền tốc độ và cảnh báo từ VietMap Live sang DuoDash CarPlay Bubble
+Maintainer: Hùng Hoàng
+Author: Hùng Hoàng
+Section: Tweaks
+Depends: mobilesubstrate
