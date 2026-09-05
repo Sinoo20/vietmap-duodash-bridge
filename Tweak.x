@@ -2,13 +2,10 @@
 #import <CoreLocation/CoreLocation.h>
 #import <notify.h>
 
-static void DuoDash_SetPerms(NSString *path) {
-    if (!path) return;
-    NSDictionary *attrs = @{NSFilePosixPermissions: @(0666)};
-    [[NSFileManager defaultManager] setAttributes:attrs ofItemAtPath:path error:nil];
-}
+#define SHARED_PLIST @"/var/jb/var/mobile/Library/Preferences/duodash_navprovider.plist"
+#define FALLBACK_PLIST @"/var/mobile/Library/Preferences/duodash_navprovider.plist"
 
-static void DuoDash_WriteAndNotify(NSDictionary *dict) {
+static void WriteData(NSDictionary *dict) {
     @autoreleasepool {
         NSError *error = nil;
         NSData *data = [NSPropertyListSerialization dataWithPropertyList:dict 
@@ -17,20 +14,24 @@ static void DuoDash_WriteAndNotify(NSDictionary *dict) {
                                                                    error:&error];
         if (!data || error) return;
 
-        // 1. Ghi vào tmp của app VietMap Live
+        // 1. Ghi vào container tmp của VietMap Live
         NSString *tmpDir = NSTemporaryDirectory();
         if (tmpDir) {
-            NSString *tmpPath = [tmpDir stringByAppendingPathComponent:@"duodash_navprovider.plist"];
-            [data writeToFile:tmpPath atomically:YES];
-            DuoDash_SetPerms(tmpPath);
+            NSString *appTmp = [tmpDir stringByAppendingPathComponent:@"duodash_navprovider.plist"];
+            [data writeToFile:appTmp atomically:YES];
+            NSDictionary *attrs = @{NSFilePosixPermissions: @(0666)};
+            [[NSFileManager defaultManager] setAttributes:attrs ofItemAtPath:appTmp error:nil];
         }
 
-        // 2. Ghi dự phòng vào thư mục dùng chung Preferences
-        NSString *sharedPath = @"/var/mobile/Library/Preferences/duodash_navprovider.plist";
-        [data writeToFile:sharedPath atomically:YES];
-        DuoDash_SetPerms(sharedPath);
+        // 2. Ghi ra thư mục ngoài Sandbox để DuoDash đọc được
+        [data writeToFile:SHARED_PLIST atomically:YES];
+        [data writeToFile:FALLBACK_PLIST atomically:YES];
+        
+        NSDictionary *attrs = @{NSFilePosixPermissions: @(0666)};
+        [[NSFileManager defaultManager] setAttributes:attrs ofItemAtPath:SHARED_PLIST error:nil];
+        [[NSFileManager defaultManager] setAttributes:attrs ofItemAtPath:FALLBACK_PLIST error:nil];
 
-        // 3. Phát thông báo hệ thống
+        // 3. Đánh thức DuoDash
         notify_post("com.sensetechlab.navprovider.update");
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
@@ -42,43 +43,53 @@ static void DuoDash_WriteAndNotify(NSDictionary *dict) {
     }
 }
 
-static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
+static void SendCurrentStatus(NSInteger speed, NSInteger limit) {
     NSMutableDictionary *dict = [NSMutableDictionary dictionary];
     dict[@"v"] = @(1);
     dict[@"provider"] = @"vn.vietmap.live";
     dict[@"providerName"] = @"VietMap Live";
     dict[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
-    dict[@"currentSpeed"] = @(currentSpeed >= 0 ? currentSpeed : 0);
-    
-    if (speedLimit > 0) {
-        dict[@"speedLimit"] = @(speedLimit);
-    }
+    dict[@"currentSpeed"] = @(speed >= 0 ? speed : 0);
+    if (limit > 0) dict[@"speedLimit"] = @(limit);
 
-    DuoDash_WriteAndNotify(dict);
+    WriteData(dict);
 }
 
-// Hook lấy tốc độ thực tế từ GPS
-%hook CLLocationManager
+// ==========================================
+// 1. PHÍA ỨNG DỤNG VIETMAP LIVE: LẤY TỐC ĐỘ
+// ==========================================
+%group VietMapProcess
 
+%hook CLLocationManager
 - (void)locationManager:(id)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
     %orig;
     CLLocation *loc = [locations lastObject];
     if (loc) {
-        double speedKmh = loc.speed * 3.6;
-        NSInteger curSpeed = (speedKmh > 0) ? (NSInteger)round(speedKmh) : 0;
-        DuoDash_SendPayload(curSpeed, 0);
+        double kmh = loc.speed * 3.6;
+        NSInteger curSpeed = (kmh > 0) ? (NSInteger)round(kmh) : 0;
+        SendCurrentStatus(curSpeed, 0);
     }
 }
+%end
 
 %end
 
+// ==========================================
+// 2. KHỞI TẠO TIẾN TRÌNH THEO TỪNG BUNDLE
+// ==========================================
 %ctor {
-    NSLog(@"[VietMapDuoDash] Loaded successfully!");
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        DuoDash_SendPayload(0, 0);
-
-        [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-            DuoDash_SendPayload(0, 0);
-        }];
-    });
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    
+    if ([bundleID isEqualToString:@"vn.vietmap.live"]) {
+        NSLog(@"[VietMapDuoDash] Running in VietMap Live");
+        %init(VietMapProcess);
+        
+        // Phát tín hiệu lặp lại liên tục mỗi 1 giây
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            SendCurrentStatus(0, 0);
+            [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+                SendCurrentStatus(0, 0);
+            }];
+        });
+    }
 }
