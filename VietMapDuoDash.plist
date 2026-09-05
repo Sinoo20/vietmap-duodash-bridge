@@ -1,5 +1,8 @@
 {
     Filter = {
-        Bundles = ( "vn.vietmap.live" );
+        Bundles = (
+            "vn.vietmap.live",
+            "com.apple.springboard"
+        );
     };
 }
