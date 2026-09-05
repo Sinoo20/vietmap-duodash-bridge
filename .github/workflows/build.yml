@@ -1,0 +1,32 @@
+name: Build Tweak Rootless
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Theos and SDK
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+          cd ~/theos/sdks
+          curl -LO https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz
+          tar -xf iPhoneOS16.5.sdk.tar.xz
+          rm iPhoneOS16.5.sdk.tar.xz
+
+      - name: Build Rootless DEB
+        run: |
+          export THEOS=~/theos
+          make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
+
+      - name: Upload DEB Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VietMapDuoDash-DEB
+          path: packages/*.deb
