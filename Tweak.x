@@ -15,9 +15,8 @@ static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
         dict[@"providerName"] = @"VietMap Live";
         dict[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
         
-        if (currentSpeed >= 0) {
-            dict[@"currentSpeed"] = @(currentSpeed);
-        }
+        dict[@"currentSpeed"] = @(currentSpeed >= 0 ? currentSpeed : 0);
+        
         if (speedLimit > 0) {
             dict[@"speedLimit"] = @(speedLimit);
         }
@@ -29,12 +28,22 @@ static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
                                                                    error:&error];
         if (data && !error) {
             [data writeToFile:plistPath atomically:YES];
+            
+            // 1. Gửi bằng notify_post chuẩn C
             notify_post("com.sensetechlab.navprovider.update");
+            
+            // 2. Gửi thêm bằng Darwin Notify Center để xuyên qua Sandbox iOS 16
+            CFNotificationCenterPostNotification(
+                CFNotificationCenterGetDarwinNotifyCenter(),
+                CFSTR("com.sensetechlab.navprovider.update"),
+                NULL,
+                NULL,
+                YES
+            );
         }
     }
 }
 
-// Hook vào Location Manager nhận tốc độ di chuyển thực tế từ GPS
 %hook CLLocationManager
 
 - (void)locationManager:(id)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
@@ -49,17 +58,15 @@ static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
 
 %end
 
-// Khởi chạy ngay khi VietMap Live vừa bật lên
 %ctor {
-    NSLog(@"[VietMapDuoDash] Injected into VietMap Live successfully!");
+    NSLog(@"[VietMapDuoDash] Running...");
     
-    // Ghi file định danh ngay lập tức sau 1 giây mở app
+    // Gửi liên tục mỗi 1.5 giây để DuoDash luôn nhận diện nguồn sống
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DuoDash_SendPayload(0, 0);
         
-        // Tạo timer định kỳ phát sóng mỗi 2 giây
-        [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
-            DuoDash_SendPayload(-1, 0);
+        [NSTimer scheduledTimerWithTimeInterval:1.5 repeats:YES block:^(NSTimer * _Nonnull timer) {
+            DuoDash_SendPayload(0, 0);
         }];
     });
 }
