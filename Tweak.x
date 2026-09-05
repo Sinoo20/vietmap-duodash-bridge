@@ -1,30 +1,24 @@
 #import <Foundation/Foundation.h>
+#import <CoreLocation/CoreLocation.h>
 #import <notify.h>
-#import <objc/runtime.h>
 
-// Hàm gửi dữ liệu sang DuoDash theo đặc tả SDK DuoDash Navigation Provider
-static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit, NSInteger cameraType, NSInteger cameraDist, NSString *cameraDesc) {
+static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit) {
     @autoreleasepool {
         NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"duodash_navprovider.plist"];
-        
         NSMutableDictionary *dict = [NSMutableDictionary dictionary];
         dict[@"v"] = @(1);
         dict[@"provider"] = [[NSBundle mainBundle] bundleIdentifier] ?: @"vn.vietmap.live";
         dict[@"providerName"] = @"VietMap Live";
         dict[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
         
+        // currentSpeed: km/h
         if (currentSpeed >= 0) {
             dict[@"currentSpeed"] = @(currentSpeed);
         }
+        
+        // speedLimit: nếu chưa hook được giới hạn thì tạm để 0 (hoặc bỏ trống theo tài liệu)
         if (speedLimit > 0) {
             dict[@"speedLimit"] = @(speedLimit);
-        }
-        if (cameraType > 0) {
-            dict[@"cameraType"] = @(cameraType);
-            dict[@"cameraDistance"] = @(cameraDist);
-            if (cameraDesc && cameraDesc.length > 0) {
-                dict[@"cameraDescription"] = cameraDesc;
-            }
         }
         
         NSError *error = nil;
@@ -39,14 +33,28 @@ static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit, NSI
     }
 }
 
-// Lớp timer đệm phát sóng định kỳ (Heartbeat 3s) để DuoDash không bị ngắt kết nối
+// Hook trực tiếp vào bộ phận nhận GPS của VietMap Live
+%hook CLLocationManager
+
+- (void)locationManager:(id)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
+    %orig;
+    
+    CLLocation *latestLocation = [locations lastObject];
+    if (latestLocation) {
+        // speed từ CLLocation trả về là m/s -> nhân 3.6 ra km/h
+        double speedInKmh = latestLocation.speed * 3.6;
+        NSInteger currentSpeed = (speedInKmh > 0) ? (NSInteger)round(speedInKmh) : 0;
+        
+        DuoDash_SendUpdate(currentSpeed, 0);
+    }
+}
+
+%end
+
+// Heartbeat gửi tín hiệu giữ kết nối mỗi 3 giây
 @interface DuoDashHeartbeat : NSObject
 + (instancetype)sharedInstance;
 - (void)startHeartbeat;
-@property (nonatomic, assign) NSInteger lastSpeed;
-@property (nonatomic, assign) NSInteger lastLimit;
-@property (nonatomic, assign) NSInteger lastCamType;
-@property (nonatomic, assign) NSInteger lastCamDist;
 @end
 
 @implementation DuoDashHeartbeat
@@ -55,26 +63,21 @@ static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit, NSI
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         instance = [[DuoDashHeartbeat alloc] init];
-        instance.lastSpeed = 0;
-        instance.lastLimit = 0;
-        instance.lastCamType = 0;
-        instance.lastCamDist = 0;
     });
     return instance;
 }
 
 - (void)startHeartbeat {
     NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer * _Nonnull t) {
-        DuoDash_SendUpdate(self.lastSpeed, self.lastLimit, self.lastCamType, self.lastCamDist, nil);
+        DuoDash_SendUpdate(0, 0);
     }];
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
 }
 @end
 
 %ctor {
-    NSLog(@"[VietMapDuoDash] Loaded into process: %@", [[NSBundle mainBundle] bundleIdentifier]);
-    // Khởi tạo vòng lặp heartbeat
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    NSLog(@"[VietMapDuoDash] Loaded into: %@", [[NSBundle mainBundle] bundleIdentifier]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         [[DuoDashHeartbeat sharedInstance] startHeartbeat];
     });
 }
