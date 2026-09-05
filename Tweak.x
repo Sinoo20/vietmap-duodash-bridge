@@ -2,6 +2,12 @@
 #import <CoreLocation/CoreLocation.h>
 #import <notify.h>
 
+static void DuoDash_SetPerms(NSString *path) {
+    if (!path) return;
+    NSDictionary *attrs = @{NSFilePosixPermissions: @(0666)};
+    [[NSFileManager defaultManager] setAttributes:attrs ofItemAtPath:path error:nil];
+}
+
 static void DuoDash_WriteAndNotify(NSDictionary *dict) {
     @autoreleasepool {
         NSError *error = nil;
@@ -11,17 +17,20 @@ static void DuoDash_WriteAndNotify(NSDictionary *dict) {
                                                                    error:&error];
         if (!data || error) return;
 
-        // 1. Ghi vào thư mục tmp của app theo tài liệu DuoDash
-        NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"duodash_navprovider.plist"];
-        [data writeToFile:tmpPath atomically:YES];
-        chmod([tmpPath UTF8String], 0666);
+        // 1. Ghi vào tmp của app VietMap Live
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (tmpDir) {
+            NSString *tmpPath = [tmpDir stringByAppendingPathComponent:@"duodash_navprovider.plist"];
+            [data writeToFile:tmpPath atomically:YES];
+            DuoDash_SetPerms(tmpPath);
+        }
 
-        // 2. Ghi thêm một bản sao dùng chung để SpringBoard / DuoDash luôn đọc được
+        // 2. Ghi dự phòng vào thư mục dùng chung Preferences
         NSString *sharedPath = @"/var/mobile/Library/Preferences/duodash_navprovider.plist";
         [data writeToFile:sharedPath atomically:YES];
-        chmod([sharedPath UTF8String], 0666);
+        DuoDash_SetPerms(sharedPath);
 
-        // 3. Phát thông báo hệ thống để DuoDash nạp dữ liệu
+        // 3. Phát thông báo hệ thống
         notify_post("com.sensetechlab.navprovider.update");
         CFNotificationCenterPostNotification(
             CFNotificationCenterGetDarwinNotifyCenter(),
@@ -48,7 +57,7 @@ static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
     DuoDash_WriteAndNotify(dict);
 }
 
-// Lấy tốc độ xe chạy thực tế từ GPS
+// Hook lấy tốc độ thực tế từ GPS
 %hook CLLocationManager
 
 - (void)locationManager:(id)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
@@ -64,8 +73,7 @@ static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
 %end
 
 %ctor {
-    NSLog(@"[VietMapDuoDash] Loaded!");
-    // Phát ngay khi VietMap vừa mở và lập lịch lặp lại mỗi 2 giây
+    NSLog(@"[VietMapDuoDash] Loaded successfully!");
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DuoDash_SendPayload(0, 0);
 
