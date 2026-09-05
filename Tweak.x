@@ -2,21 +2,22 @@
 #import <CoreLocation/CoreLocation.h>
 #import <notify.h>
 
-static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit) {
+static void DuoDash_SendPayload(NSInteger currentSpeed, NSInteger speedLimit) {
     @autoreleasepool {
-        NSString *tmpPath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"duodash_navprovider.plist"];
+        NSString *tmpDir = NSTemporaryDirectory();
+        if (!tmpDir) return;
+        
+        NSString *plistPath = [tmpDir stringByAppendingPathComponent:@"duodash_navprovider.plist"];
+        
         NSMutableDictionary *dict = [NSMutableDictionary dictionary];
         dict[@"v"] = @(1);
-        dict[@"provider"] = [[NSBundle mainBundle] bundleIdentifier] ?: @"vn.vietmap.live";
+        dict[@"provider"] = @"vn.vietmap.live";
         dict[@"providerName"] = @"VietMap Live";
         dict[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
         
-        // currentSpeed: km/h
         if (currentSpeed >= 0) {
             dict[@"currentSpeed"] = @(currentSpeed);
         }
-        
-        // speedLimit: nếu chưa hook được giới hạn thì tạm để 0 (hoặc bỏ trống theo tài liệu)
         if (speedLimit > 0) {
             dict[@"speedLimit"] = @(speedLimit);
         }
@@ -27,57 +28,38 @@ static void DuoDash_SendUpdate(NSInteger currentSpeed, NSInteger speedLimit) {
                                                                  options:0 
                                                                    error:&error];
         if (data && !error) {
-            [data writeToFile:tmpPath atomically:YES];
+            [data writeToFile:plistPath atomically:YES];
             notify_post("com.sensetechlab.navprovider.update");
         }
     }
 }
 
-// Hook trực tiếp vào bộ phận nhận GPS của VietMap Live
+// Hook vào Location Manager nhận tốc độ di chuyển thực tế từ GPS
 %hook CLLocationManager
 
 - (void)locationManager:(id)manager didUpdateLocations:(NSArray<CLLocation *> *)locations {
     %orig;
-    
-    CLLocation *latestLocation = [locations lastObject];
-    if (latestLocation) {
-        // speed từ CLLocation trả về là m/s -> nhân 3.6 ra km/h
-        double speedInKmh = latestLocation.speed * 3.6;
-        NSInteger currentSpeed = (speedInKmh > 0) ? (NSInteger)round(speedInKmh) : 0;
-        
-        DuoDash_SendUpdate(currentSpeed, 0);
+    CLLocation *loc = [locations lastObject];
+    if (loc) {
+        double speedKmh = loc.speed * 3.6;
+        NSInteger curSpeed = (speedKmh > 0) ? (NSInteger)round(speedKmh) : 0;
+        DuoDash_SendPayload(curSpeed, 0);
     }
 }
 
 %end
 
-// Heartbeat gửi tín hiệu giữ kết nối mỗi 3 giây
-@interface DuoDashHeartbeat : NSObject
-+ (instancetype)sharedInstance;
-- (void)startHeartbeat;
-@end
-
-@implementation DuoDashHeartbeat
-+ (instancetype)sharedInstance {
-    static DuoDashHeartbeat *instance = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        instance = [[DuoDashHeartbeat alloc] init];
-    });
-    return instance;
-}
-
-- (void)startHeartbeat {
-    NSTimer *timer = [NSTimer scheduledTimerWithTimeInterval:3.0 repeats:YES block:^(NSTimer * _Nonnull t) {
-        DuoDash_SendUpdate(0, 0);
-    }];
-    [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
-}
-@end
-
+// Khởi chạy ngay khi VietMap Live vừa bật lên
 %ctor {
-    NSLog(@"[VietMapDuoDash] Loaded into: %@", [[NSBundle mainBundle] bundleIdentifier]);
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [[DuoDashHeartbeat sharedInstance] startHeartbeat];
+    NSLog(@"[VietMapDuoDash] Injected into VietMap Live successfully!");
+    
+    // Ghi file định danh ngay lập tức sau 1 giây mở app
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DuoDash_SendPayload(0, 0);
+        
+        // Tạo timer định kỳ phát sóng mỗi 2 giây
+        [NSTimer scheduledTimerWithTimeInterval:2.0 repeats:YES block:^(NSTimer * _Nonnull timer) {
+            DuoDash_SendPayload(-1, 0);
+        }];
     });
 }
