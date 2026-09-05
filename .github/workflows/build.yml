@@ -12,17 +12,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Theos and SDK
+      - name: Clone Theos
         run: |
-          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-          cd ~/theos/sdks
-          curl -LO https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz
-          tar -xf iPhoneOS16.5.sdk.tar.xz
-          rm iPhoneOS16.5.sdk.tar.xz
+          git clone --recursive https://github.com/theos/theos.git $HOME/theos
+
+      - name: Download iOS 16.5 SDK
+        run: |
+          mkdir -p $HOME/theos/sdks
+          curl -L "https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz" -o sdk.tar.xz
+          tar -xf sdk.tar.xz -C $HOME/theos/sdks
+          rm sdk.tar.xz
 
       - name: Build Rootless DEB
         run: |
-          export THEOS=~/theos
+          export THEOS=$HOME/theos
           make package THEOS_PACKAGE_SCHEME=rootless FINALPACKAGE=1
 
       - name: Upload DEB Artifact
@@ -30,3 +33,4 @@ jobs:
         with:
           name: VietMapDuoDash-DEB
           path: packages/*.deb
+          if-no-files-found: error
